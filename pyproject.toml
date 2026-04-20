@@ -1,7 +1,11 @@
 [project]
 name = "finesightbench"
 version = "0.1.0"
-description = "Add your description here"
+description = "Fine-grained visual perception & reasoning benchmark for VLMs"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "Pillow>=10.0",
+    "numpy>=1.24",
+    "matplotlib>=3.7",
+]
