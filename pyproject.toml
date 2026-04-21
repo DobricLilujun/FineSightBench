@@ -8,4 +8,8 @@ dependencies = [
     "Pillow>=10.0",
     "numpy>=1.24",
     "matplotlib>=3.7",
+    "cairosvg>=2.7",
 ]
+
+[tool.setuptools.package-data]
+"finesightbench.core" = ["assets/animals/*.svg"]

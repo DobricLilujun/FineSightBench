@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import io
 import math
 import random
 from pathlib import Path
 
+import cairosvg
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
@@ -17,65 +19,43 @@ ANIMAL_TYPES = ["cat", "dog", "fish", "bird", "rabbit", "turtle"]
 SHAPE_TYPES = ["circle", "triangle", "square", "star", "diamond", "pentagon", "hexagon", "cross"]
 
 # Target sizes used across the benchmark (pixels)
-TARGET_SIZES = [3, 5, 8, 12, 16, 24, 32, 48]
+TARGET_SIZES = [4, 8,12, 16, 24, 32, 48]
 
-# ── pixel-art animal templates (7×7) ────────────────────────────────────────
-_ANIMAL_TEMPLATES: dict[str, list[list[int]]] = {
-    "cat": [
-        [0, 1, 0, 0, 0, 1, 0],
-        [1, 1, 1, 0, 1, 1, 1],
-        [1, 1, 1, 1, 1, 1, 1],
-        [1, 0, 1, 1, 1, 0, 1],
-        [1, 1, 1, 1, 1, 1, 1],
-        [0, 1, 1, 1, 1, 1, 0],
-        [0, 1, 0, 0, 0, 1, 0],
-    ],
-    "dog": [
-        [1, 1, 0, 0, 0, 1, 1],
-        [1, 1, 1, 1, 1, 1, 1],
-        [0, 1, 1, 1, 1, 1, 0],
-        [0, 1, 0, 1, 0, 1, 0],
-        [0, 1, 1, 1, 1, 1, 0],
-        [0, 0, 1, 1, 1, 0, 0],
-        [0, 0, 1, 0, 1, 0, 0],
-    ],
-    "fish": [
-        [0, 0, 0, 1, 0, 0, 0],
-        [1, 0, 1, 1, 1, 0, 0],
-        [1, 1, 1, 0, 1, 1, 0],
-        [1, 1, 1, 1, 1, 1, 1],
-        [1, 1, 1, 0, 1, 1, 0],
-        [1, 0, 1, 1, 1, 0, 0],
-        [0, 0, 0, 1, 0, 0, 0],
-    ],
-    "bird": [
-        [0, 0, 1, 1, 0, 0, 0],
-        [0, 1, 1, 1, 0, 0, 0],
-        [1, 1, 1, 1, 1, 1, 1],
-        [0, 0, 1, 1, 1, 1, 0],
-        [0, 0, 0, 1, 0, 0, 0],
-        [0, 0, 1, 0, 1, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0],
-    ],
-    "rabbit": [
-        [0, 1, 0, 0, 1, 0, 0],
-        [0, 1, 0, 0, 1, 0, 0],
-        [0, 1, 1, 1, 1, 0, 0],
-        [1, 1, 0, 1, 0, 1, 0],
-        [1, 1, 1, 1, 1, 1, 0],
-        [0, 1, 1, 1, 1, 0, 0],
-        [0, 0, 1, 0, 1, 0, 0],
-    ],
-    "turtle": [
-        [0, 0, 1, 1, 1, 0, 0],
-        [0, 1, 1, 1, 1, 1, 0],
-        [1, 1, 1, 1, 1, 1, 1],
-        [0, 1, 1, 1, 1, 1, 0],
-        [0, 0, 1, 1, 1, 0, 0],
-        [1, 0, 0, 0, 0, 0, 1],
-        [0, 0, 0, 0, 0, 0, 0],
-    ],
-}
+# ── SVG-based animal silhouettes ────────────────────────────────────────────
+_ANIMAL_SVG_DIR = Path(__file__).parent / "assets" / "animals"
+
+_svg_cache: dict[str, bytes] = {}
+_animal_mask_cache: dict[tuple[str, int], np.ndarray] = {}
+
+
+def _load_animal_svg(animal_type: str) -> bytes:
+    if animal_type not in _svg_cache:
+        path = _ANIMAL_SVG_DIR / f"{animal_type}.svg"
+        _svg_cache[animal_type] = path.read_bytes()
+    return _svg_cache[animal_type]
+
+
+def _animal_alpha_mask(animal_type: str, size: int) -> np.ndarray:
+    """Return an H×W uint8 alpha mask for *animal_type* rasterised at *size*.
+
+    Rasterisation is done at a high resolution then downsampled for clean edges
+    even at very small target sizes.
+    """
+    key = (animal_type, size)
+    if key in _animal_mask_cache:
+        return _animal_mask_cache[key]
+    render_size = max(size * 4, 64)
+    png_bytes = cairosvg.svg2png(
+        bytestring=_load_animal_svg(animal_type),
+        output_width=render_size,
+        output_height=render_size,
+    )
+    img = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
+    if render_size != size:
+        img = img.resize((size, size), Image.LANCZOS)
+    alpha = np.array(img.split()[-1], dtype=np.uint8)
+    _animal_mask_cache[key] = alpha
+    return alpha
 
 # ── font helper ──────────────────────────────────────────────────────────────
 _FONT_SEARCH_PATHS = [
@@ -151,21 +131,18 @@ def draw_animal(
     animal_type: str,
     color: tuple[int, int, int],
 ) -> None:
-    """Render a pixel-art animal silhouette onto *image*."""
-    template = np.array(_ANIMAL_TEMPLATES[animal_type], dtype=np.uint8)
-    h, w = template.shape
-    # scale template to target size
-    scaled = np.zeros((size, size), dtype=np.uint8)
-    for sy in range(size):
-        for sx in range(size):
-            oy = int(sy * h / size)
-            ox = int(sx * w / size)
-            scaled[sy, sx] = template[min(oy, h - 1), min(ox, w - 1)]
-    # build RGBA patch
+    """Render a vector animal silhouette onto *image*.
+
+    Silhouettes are loaded from bundled SVG files and colourised in *color*.
+    The SVG is rasterised at high resolution and resampled so edges stay
+    smooth even at very small target sizes.
+    """
+    alpha = _animal_alpha_mask(animal_type, size)
     patch = np.zeros((size, size, 4), dtype=np.uint8)
-    for c in range(3):
-        patch[..., c] = scaled * color[c]
-    patch[..., 3] = scaled * 255
+    patch[..., 0] = color[0]
+    patch[..., 1] = color[1]
+    patch[..., 2] = color[2]
+    patch[..., 3] = alpha
     patch_img = Image.fromarray(patch, "RGBA")
     image.paste(patch_img, position, patch_img)
 

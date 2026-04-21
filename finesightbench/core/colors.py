@@ -63,6 +63,6 @@ def simulate_cvd(image: Image.Image, cvd_type: str) -> Image.Image:
     return Image.fromarray(transformed, "RGB")
 
 
-def apply_blur(image: Image.Image, radius: float = 5.0) -> Image.Image:
+def apply_blur(image: Image.Image, radius: float = 12.0) -> Image.Image:
     """Return a Gaussian-blurred copy of *image*."""
     return image.filter(ImageFilter.GaussianBlur(radius=radius))
