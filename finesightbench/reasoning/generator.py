@@ -138,58 +138,88 @@ def _draw_target(
 
 
 def _gen_comparison(cw: int, ch: int, base_size: int, count: int = 2) -> dict[str, Any]:
-    """Two targets of different sizes. Two-part question: count + larger side."""
+    """Multiple targets (3-5) of different sizes.
+
+    Two-part question:
+    (1) How many objects are in the image?
+    (2) List all objects from smallest to largest (or largest to smallest),
+        identified by their left-to-right position (1st = leftmost, etc.).
+    """
+    n = random.randint(3, 5)
     obj_type = random.choice(["letter", "animal", "block", "shape", "dot"])
     value = random.choice(_VALUE_POOL.get(obj_type, ["x"]))
     color_name = random.choice(TARGET_COLORS)
     color_rgb = COLORS[color_name]
 
-    ratio = random.choice([0.5, 0.6, 0.75, 1.5, 1.7, 2.0])
-    size_a = base_size
-    size_b = max(3, int(base_size * ratio))
-    if size_a == size_b:
-        size_b = size_a + 2
+    # Generate n distinct sizes spread around base_size with a guaranteed minimum
+    # 2-pixel gap so every object is visually distinguishable in size.
+    all_factors = [0.4, 0.6, 0.85, 1.0, 1.4, 1.9, 2.6]
+    chosen_factors = sorted(random.sample(all_factors, n))
+    sizes: list[int] = []
+    for f in chosen_factors:
+        s = max(4, int(base_size * f))
+        if sizes:
+            s = max(s, sizes[-1] + 2)
+        sizes.append(s)
 
-    margin = 10
-    ax = random.randint(margin, cw // 2 - size_a - margin)
-    ay = random.randint(margin, ch - size_a - margin)
-    bx = random.randint(cw // 2 + margin, max(cw // 2 + margin + 1, cw - size_b - margin))
-    by = random.randint(margin, ch - size_b - margin)
+    # Shuffle sizes so the left-to-right order doesn't trivially match size order.
+    shuffled_sizes = sizes[:]
+    random.shuffle(shuffled_sizes)
 
+    # Place objects non-overlapping.
+    positions = _place_non_overlapping(cw, ch, shuffled_sizes)
+
+    # Assign ordinal labels by ascending x-position (left to right).
+    _ORDINALS = ["1st", "2nd", "3rd", "4th", "5th"]
+    obj_info = sorted(
+        [{"size": s, "pos": p} for s, p in zip(shuffled_sizes, positions)],
+        key=lambda o: o["pos"][0],
+    )
+    for i, obj in enumerate(obj_info):
+        obj["ordinal"] = _ORDINALS[i]
+
+    # Randomly choose sort direction.
+    ascending = random.random() < 0.5
+    sort_dir = "smallest to largest" if ascending else "largest to smallest"
+    sorted_by_size = sorted(obj_info, key=lambda o: o["size"], reverse=not ascending)
+    sorted_ordinals = [o["ordinal"] for o in sorted_by_size]
+
+    answer = f"{n}; {', '.join(sorted_ordinals)}"
+
+    # Draw all objects onto the canvas.
     img = create_canvas(cw, ch)
-    _draw_target(img, obj_type, (ax, ay), size_a, color_rgb, value)
-    _draw_target(img, obj_type, (bx, by), size_b, color_rgb, value)
-
-    if size_a > size_b:
-        larger = "left"
-    elif size_b > size_a:
-        larger = "right"
-    else:
-        larger = "same"
+    for obj in obj_info:
+        _draw_target(img, obj_type, obj["pos"], obj["size"], color_rgb, value)
 
     question = (
-        "Answer two questions about the image. "
-        "(1) How many objects are in the image? "
-        "(2) Which one is larger, the object on the left or the one on the right? "
-        "Answer in the format: '<count>; <left|right|same>'."
+        f"Answer two questions about the image. "
+        f"(1) How many objects are in the image? "
+        f"(2) List all objects from {sort_dir}, identified by their left-to-right "
+        f"position (1st = leftmost, 2nd = second from left, etc.), separated by commas. "
+        f"Answer in the format: '<count>; <pos1>, <pos2>, ...'."
         + _OBJ_TYPE_CHOICES_HINT.get(obj_type, "")
     )
-    answer = f"2; {larger}"
+
+    targets = [
+        {
+            "type": obj_type,
+            "value": value,
+            "size": obj["size"],
+            "position": list(obj["pos"]),
+            "color": color_name,
+            "color_rgb": list(color_rgb),
+            "ordinal": obj["ordinal"],
+        }
+        for obj in obj_info
+    ]
 
     return {
         "image": img,
         "task_type": "comparison",
         "question": question,
         "answer": answer,
-        "sub_answers": {"count": 2, "larger": larger},
-        "targets": [
-            {"type": obj_type, "value": value, "size": size_a,
-             "position": [ax, ay], "color": color_name,
-             "color_rgb": list(color_rgb), "side": "left"},
-            {"type": obj_type, "value": value, "size": size_b,
-             "position": [bx, by], "color": color_name,
-             "color_rgb": list(color_rgb), "side": "right"},
-        ],
+        "sub_answers": {"count": n, "order": sorted_ordinals, "direction": sort_dir},
+        "targets": targets,
     }
 
 

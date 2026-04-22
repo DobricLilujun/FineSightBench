@@ -19,7 +19,7 @@ ANIMAL_TYPES = ["cat", "dog", "fish", "bird", "rabbit", "turtle"]
 SHAPE_TYPES = ["circle", "triangle", "square", "star", "diamond", "pentagon", "hexagon", "cross"]
 
 # Target sizes used across the benchmark (pixels)
-TARGET_SIZES = [4, 8,12, 16, 24, 32, 48]
+TARGET_SIZES = [4, 8, 12, 16, 24, 32, 48]
 
 # ── SVG-based animal silhouettes ────────────────────────────────────────────
 _ANIMAL_SVG_DIR = Path(__file__).parent / "assets" / "animals"
