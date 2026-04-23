@@ -7,6 +7,18 @@ from .framework import (
     evaluate_model_on_val_data,
     evaluate_models_on_val_data,
 )
+from .json_metrics import (
+    FieldSpec,
+    JSONEvalResult,
+    SCALAR,
+    ORDERED_LIST,
+    UNORDERED_SET,
+    MAPPING,
+    extract_json,
+    evaluate_json_prediction,
+    aggregate_json_results,
+    BUILTIN_SCHEMAS,
+)
 
 __all__ = [
     "MODEL_SPECS",
@@ -14,4 +26,14 @@ __all__ = [
     "validate_val_dataset",
     "evaluate_model_on_val_data",
     "evaluate_models_on_val_data",
+    "FieldSpec",
+    "JSONEvalResult",
+    "SCALAR",
+    "ORDERED_LIST",
+    "UNORDERED_SET",
+    "MAPPING",
+    "extract_json",
+    "evaluate_json_prediction",
+    "aggregate_json_results",
+    "BUILTIN_SCHEMAS",
 ]

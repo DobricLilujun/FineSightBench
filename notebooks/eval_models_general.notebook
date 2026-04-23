@@ -1,0 +1,226 @@
+{
+  "cells": [
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "language": "markdown"
+      },
+      "source": [
+        "# General VLM Eval (Non-DeepSeek) on HF FineSightBench",
+        "",
+        "This notebook evaluates all tested VLMs except `deepseek-vl2-tiny` using the Hugging Face dataset `Volavion/FineSightBench`.",
+        "",
+        "Pipeline:",
+        "1. Load dataset from HF Hub.",
+        "2. For each split and each task type, sample 2 items.",
+        "3. Materialize sampled data into `val_data` format (`labels.json` + image files).",
+        "4. Run standard framework eval via `evaluate_models_on_val_data`.",
+        "5. Save model reports and summary CSV/JSON under outputs."
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "language": "python"
+      },
+      "source": [
+        "import json",
+        "import random",
+        "import shutil",
+        "from collections import defaultdict",
+        "from pathlib import Path",
+        "",
+        "from datasets import load_dataset",
+        "from PIL import Image",
+        "",
+        "from finesightbench.evaluation.framework import (",
+        "    evaluate_models_on_val_data,",
+        "    list_supported_models,",
+        ")",
+        "",
+        "REPO_ROOT = Path.cwd().resolve()",
+        "if not (REPO_ROOT / \"finesightbench\").exists():",
+        "    REPO_ROOT = REPO_ROOT.parent.resolve()",
+        "",
+        "HF_DATASET_ID = \"Volavion/FineSightBench\"",
+        "SEED = 42",
+        "MAX_PER_TASK = 2",
+        "",
+        "VAL_ROOT = REPO_ROOT / \"outputs\" / \"val_data_hf_subset\"",
+        "OUTPUT_DIR = REPO_ROOT / \"outputs\" / \"vlm_eval_hf_general\"",
+        "",
+        "ALLOW_DOWNLOAD = True",
+        "RUN_ATTENTION_TEST = False",
+        "",
+        "ALL_MODELS = list_supported_models()",
+        "MODEL_NAMES = [m for m in ALL_MODELS if m != \"deepseek-vl2-tiny\"]",
+        "",
+        "print(\"Models to evaluate:\")",
+        "for m in MODEL_NAMES:",
+        "    print(\" -\", m)",
+        "print(f\"\\nHF dataset: {HF_DATASET_ID}\")",
+        "print(f\"Subset val root: {VAL_ROOT}\")",
+        "print(f\"Output dir: {OUTPUT_DIR}\")"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "language": "python"
+      },
+      "source": [
+        "print(f\"Loading dataset from Hugging Face: {HF_DATASET_ID}\")",
+        "ds = load_dataset(HF_DATASET_ID)",
+        "print(ds)",
+        "print(\"Splits:\", list(ds.keys()))"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "language": "python"
+      },
+      "source": [
+        "def _to_rgb_pil(img_obj):",
+        "    if isinstance(img_obj, Image.Image):",
+        "        return img_obj.convert(\"RGB\")",
+        "    if isinstance(img_obj, dict) and \"path\" in img_obj and img_obj[\"path\"]:",
+        "        return Image.open(img_obj[\"path\"]).convert(\"RGB\")",
+        "    raise TypeError(f\"Unsupported image object type: {type(img_obj)}\")",
+        "",
+        "",
+        "def build_val_data_subset_from_hf(dataset_dict, out_root: Path, max_per_task: int, seed: int):",
+        "    rng = random.Random(seed)",
+        "",
+        "    if out_root.exists():",
+        "        shutil.rmtree(out_root)",
+        "    out_root.mkdir(parents=True, exist_ok=True)",
+        "",
+        "    selected_counts = {}",
+        "    total_selected = 0",
+        "",
+        "    for split_name in dataset_dict.keys():",
+        "        split_ds = dataset_dict[split_name]",
+        "        grouped_indices = defaultdict(list)",
+        "",
+        "        for idx, item in enumerate(split_ds):",
+        "            grouped_indices[str(item.get(\"task_type\", \"unknown\"))].append(idx)",
+        "",
+        "        split_dir = out_root / split_name",
+        "        img_dir = split_dir / \"images\"",
+        "        split_dir.mkdir(parents=True, exist_ok=True)",
+        "        img_dir.mkdir(parents=True, exist_ok=True)",
+        "",
+        "        samples = []",
+        "        per_task_counts = {}",
+        "",
+        "        for task_type in sorted(grouped_indices.keys()):",
+        "            indices = grouped_indices[task_type]",
+        "            rng.shuffle(indices)",
+        "            chosen = indices[:max_per_task]",
+        "            per_task_counts[task_type] = len(chosen)",
+        "",
+        "            for j, ds_idx in enumerate(chosen):",
+        "                item = split_ds[ds_idx]",
+        "                image_id = str(item.get(\"image_id\", f\"{split_name}_{task_type}_{ds_idx}\"))",
+        "",
+        "                pil_img = _to_rgb_pil(item[\"image\"])",
+        "                img_name = f\"{image_id}_{j}.png\"",
+        "                rel_img_path = f\"images/{img_name}\"",
+        "                pil_img.save(img_dir / img_name)",
+        "",
+        "                sample = {",
+        "                    \"image_id\": image_id,",
+        "                    \"image_path\": rel_img_path,",
+        "                    \"question\": str(item.get(\"question\", \"\")),",
+        "                    \"answer\": str(item.get(\"answer\", \"\")),",
+        "                    \"task_type\": task_type,",
+        "                    \"metadata\": {",
+        "                        \"difficulty\": item.get(\"difficulty\"),",
+        "                        \"source\": \"hf_subset\"",
+        "                    }",
+        "                }",
+        "                samples.append(sample)",
+        "",
+        "        with (split_dir / \"labels.json\").open(\"w\", encoding=\"utf-8\") as f:",
+        "            json.dump({\"samples\": samples}, f, ensure_ascii=False, indent=2)",
+        "",
+        "        selected_counts[split_name] = per_task_counts",
+        "        total_selected += len(samples)",
+        "",
+        "    return {",
+        "        \"val_root\": str(out_root),",
+        "        \"selected_counts\": selected_counts,",
+        "        \"total_selected\": total_selected,",
+        "    }"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "language": "python"
+      },
+      "source": [
+        "subset_info = build_val_data_subset_from_hf(",
+        "    dataset_dict=ds,",
+        "    out_root=VAL_ROOT,",
+        "    max_per_task=MAX_PER_TASK,",
+        "    seed=SEED,",
+        ")",
+        "",
+        "print(json.dumps(subset_info, indent=2, ensure_ascii=False))"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "language": "python"
+      },
+      "source": [
+        "summary = evaluate_models_on_val_data(",
+        "    model_names=MODEL_NAMES,",
+        "    val_root=VAL_ROOT,",
+        "    output_dir=OUTPUT_DIR,",
+        "    max_samples_per_split=None,",
+        "    local_files_only=not ALLOW_DOWNLOAD,",
+        "    cache_dir=None,",
+        "    seed=SEED,",
+        "    run_attention_test=RUN_ATTENTION_TEST,",
+        ")",
+        "",
+        "print(f\"Summary JSON: {summary['summary_json']}\")",
+        "print(f\"Summary CSV : {summary['summary_csv']}\")"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "metadata": {
+        "language": "python"
+      },
+      "source": [
+        "for row in summary[\"models\"]:",
+        "    print({",
+        "        \"model_name\": row.get(\"model_name\"),",
+        "        \"status\": row.get(\"status\"),",
+        "        \"accuracy\": row.get(\"accuracy\"),",
+        "        \"num_evaluated\": row.get(\"num_evaluated\"),",
+        "        \"attention_status\": row.get(\"attention_status\"),",
+        "        \"error\": row.get(\"error\"),",
+        "    })"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "language": "markdown"
+      },
+      "source": [
+        "## Notes",
+        "",
+        "- This run uses a balanced task subset: 2 samples for each task type inside each split.",
+        "- The scoring logic is the same standard framework eval (`is_correct_prediction`) used elsewhere in this repo.",
+        "- To run full-size eval instead, replace the subset val root with `data/val_data` or increase `MAX_PER_TASK`."
+      ]
+    }
+  ]
+}
