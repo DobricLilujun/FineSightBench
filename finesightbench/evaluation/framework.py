@@ -48,7 +48,7 @@ class ModelSpec:
     trust_remote_code: bool = True
     dtype: str = "bfloat16"
     attn_implementation: str | None = "eager"
-    max_new_tokens: int = 64
+    max_new_tokens: int = 1024
     notes: str = ""
 
 
@@ -857,8 +857,110 @@ class HuggingFaceVLM:
         tokens = [tokenizer.decode([int(t)], skip_special_tokens=False) for t in generated_ids.tolist()]
         return answer, tokens
 
-    def predict(self, image: Image.Image, question: str) -> str:
+    def _preprocess_internvl_image(
+        self, image: Image.Image, input_size: int = 448, max_num: int = 12
+    ) -> torch.Tensor:
+        """Preprocess an image for InternVL using the official dynamic-tiling approach."""
+        import torchvision.transforms as T
+        from torchvision.transforms.functional import InterpolationMode
+
+        IMAGENET_MEAN = (0.485, 0.456, 0.406)
+        IMAGENET_STD  = (0.229, 0.224, 0.225)
+        transform = T.Compose([
+            T.Lambda(lambda img: img.convert("RGB") if img.mode != "RGB" else img),
+            T.Resize((input_size, input_size), interpolation=InterpolationMode.BICUBIC),
+            T.ToTensor(),
+            T.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+        ])
+
+        img = image.convert("RGB")
+        orig_w, orig_h = img.size
+        aspect_ratio = orig_w / orig_h
+
+        target_ratios = sorted(
+            {
+                (i, j)
+                for n in range(1, max_num + 1)
+                for i in range(1, n + 1)
+                for j in range(1, n + 1)
+                if 1 <= i * j <= max_num
+            },
+            key=lambda x: x[0] * x[1],
+        )
+
+        best_ratio = (1, 1)
+        best_diff  = float("inf")
+        area = orig_w * orig_h
+        for ratio in target_ratios:
+            target_ar = ratio[0] / ratio[1]
+            diff = abs(aspect_ratio - target_ar)
+            if diff < best_diff or (
+                diff == best_diff
+                and area > 0.5 * input_size * input_size * ratio[0] * ratio[1]
+            ):
+                best_diff  = diff
+                best_ratio = ratio
+
+        target_w = input_size * best_ratio[0]
+        target_h = input_size * best_ratio[1]
+        blocks   = best_ratio[0] * best_ratio[1]
+
+        resized = img.resize((target_w, target_h))
+        tiles: list[Image.Image] = []
+        for i in range(blocks):
+            col = i % (target_w // input_size)
+            row = i // (target_w // input_size)
+            box = (
+                col * input_size, row * input_size,
+                (col + 1) * input_size, (row + 1) * input_size,
+            )
+            tiles.append(resized.crop(box))
+        if len(tiles) != 1:
+            tiles.append(img.resize((input_size, input_size)))  # thumbnail
+
+        pixel_values = torch.stack([transform(t) for t in tiles])
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        dtype = _resolve_torch_dtype(self.spec.dtype)
+        return pixel_values.to(device=device, dtype=dtype)
+
+    def _predict_internvl(
+        self,
+        image: Image.Image,
+        question: str,
+        *,
+        do_sample: bool = False,
+        temperature: float = 1.0,
+    ) -> str:
+        """Use InternVL's native model.chat() API for correct inference."""
         assert self.model is not None and self.processor is not None
+        tokenizer = getattr(self.processor, "tokenizer", None)
+        if tokenizer is None:
+            raise RuntimeError("InternVL processor has no tokenizer attribute.")
+        pixel_values = self._preprocess_internvl_image(image)
+        prompt = f"<image>\n{question}"
+        generation_config = dict(
+            max_new_tokens=self.spec.max_new_tokens,
+            do_sample=do_sample,
+            temperature=temperature,
+        )
+        with torch.no_grad():
+            response = self.model.chat(tokenizer, pixel_values, prompt, generation_config)
+        return response if isinstance(response, str) else str(response)
+
+    def predict(
+        self,
+        image: Image.Image,
+        question: str,
+        *,
+        do_sample: bool = False,
+        temperature: float = 1.0,
+    ) -> str:
+        assert self.model is not None and self.processor is not None
+
+        # InternVL has a custom .chat() API that handles prompting correctly.
+        if "internvl" in self.spec.model_id.lower():
+            return self._predict_internvl(image, question, do_sample=do_sample, temperature=temperature)
+
         inputs = self._build_inputs(image, question)
 
         input_len = int(inputs["input_ids"].shape[1]) if "input_ids" in inputs else 0
@@ -867,8 +969,8 @@ class HuggingFaceVLM:
             out = self.model.generate(
                 **inputs,
                 max_new_tokens=self.spec.max_new_tokens,
-                do_sample=False,
-                temperature=1.0,
+                do_sample=do_sample,
+                temperature=temperature,
                 return_dict_in_generate=True,
                 output_attentions=False,
             )
