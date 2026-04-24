@@ -53,6 +53,7 @@ class ModelSpec:
 
 
 MODEL_SPECS: dict[str, ModelSpec] = {
+    # Qwen3-VL
     "Qwen3-VL-2B-Instruct": ModelSpec(
         name="Qwen3-VL-2B-Instruct",
         model_id="Qwen/Qwen3-VL-2B-Instruct",
@@ -60,6 +61,28 @@ MODEL_SPECS: dict[str, ModelSpec] = {
         dtype="bfloat16",
         attn_implementation="eager",
     ),
+    "Qwen3-VL-4B-Instruct": ModelSpec(
+        name="Qwen3-VL-4B-Instruct",
+        model_id="Qwen/Qwen3-VL-4B-Instruct",
+        trust_remote_code=True,
+        dtype="bfloat16",
+        attn_implementation="eager",
+    ),
+    "Qwen3-VL-8B-Instruct": ModelSpec(
+        name="Qwen3-VL-8B-Instruct",
+        model_id="Qwen/Qwen3-VL-8B-Instruct",
+        trust_remote_code=True,
+        dtype="bfloat16",
+        attn_implementation="eager",
+    ),
+    "Qwen3-VL-30B-A3B-Instruct": ModelSpec(
+        name="Qwen3-VL-30B-A3B-Instruct",
+        model_id="Qwen/Qwen3-VL-30B-A3B-Instruct",
+        trust_remote_code=True,
+        dtype="bfloat16",
+        attn_implementation="eager",
+    ),
+    # Llama-4
     "Llama-4-Scout-17B-16E-Instruct": ModelSpec(
         name="Llama-4-Scout-17B-16E-Instruct",
         model_id="meta-llama/Llama-4-Scout-17B-16E-Instruct",
@@ -68,6 +91,15 @@ MODEL_SPECS: dict[str, ModelSpec] = {
         attn_implementation="eager",
         notes="Gated model on Hugging Face; approval required.",
     ),
+    "Llama-4-Maverick-17B-128E-Instruct": ModelSpec(
+        name="Llama-4-Maverick-17B-128E-Instruct",
+        model_id="meta-llama/Llama-4-Maverick-17B-128E-Instruct",
+        trust_remote_code=True,
+        dtype="bfloat16",
+        attn_implementation="eager",
+        notes="Gated model on Hugging Face; approval required.",
+    ),
+    # InternVL3.5-Flash
     "InternVL3_5-1B-Flash": ModelSpec(
         name="InternVL3_5-1B-Flash",
         model_id="OpenGVLab/InternVL3_5-1B-Flash",
@@ -75,6 +107,49 @@ MODEL_SPECS: dict[str, ModelSpec] = {
         dtype="bfloat16",
         attn_implementation="eager",
     ),
+    "InternVL3_5-2B-Flash": ModelSpec(
+        name="InternVL3_5-2B-Flash",
+        model_id="OpenGVLab/InternVL3_5-2B-Flash",
+        trust_remote_code=True,
+        dtype="bfloat16",
+        attn_implementation="eager",
+    ),
+    "InternVL3_5-4B-Flash": ModelSpec(
+        name="InternVL3_5-4B-Flash",
+        model_id="OpenGVLab/InternVL3_5-4B-Flash",
+        trust_remote_code=True,
+        dtype="bfloat16",
+        attn_implementation="eager",
+    ),
+    "InternVL3_5-8B-Flash": ModelSpec(
+        name="InternVL3_5-8B-Flash",
+        model_id="OpenGVLab/InternVL3_5-8B-Flash",
+        trust_remote_code=True,
+        dtype="bfloat16",
+        attn_implementation="eager",
+    ),
+    "InternVL3_5-14B-Flash": ModelSpec(
+        name="InternVL3_5-14B-Flash",
+        model_id="OpenGVLab/InternVL3_5-14B-Flash",
+        trust_remote_code=True,
+        dtype="bfloat16",
+        attn_implementation="eager",
+    ),
+    "InternVL3_5-30B-A3B-Flash": ModelSpec(
+        name="InternVL3_5-30B-A3B-Flash",
+        model_id="OpenGVLab/InternVL3_5-30B-A3B-Flash",
+        trust_remote_code=True,
+        dtype="bfloat16",
+        attn_implementation="eager",
+    ),
+    "InternVL3_5-38B-Flash": ModelSpec(
+        name="InternVL3_5-38B-Flash",
+        model_id="OpenGVLab/InternVL3_5-38B-Flash",
+        trust_remote_code=True,
+        dtype="bfloat16",
+        attn_implementation="eager",
+    ),
+    # DeepSeek-VL2
     "deepseek-vl2-tiny": ModelSpec(
         name="deepseek-vl2-tiny",
         model_id="deepseek-ai/deepseek-vl2-tiny",
@@ -82,6 +157,14 @@ MODEL_SPECS: dict[str, ModelSpec] = {
         dtype="bfloat16",
         attn_implementation="eager",
     ),
+    "deepseek-vl2-small": ModelSpec(
+        name="deepseek-vl2-small",
+        model_id="deepseek-ai/deepseek-vl2-small",
+        trust_remote_code=True,
+        dtype="bfloat16",
+        attn_implementation="eager",
+    ),
+    # GLM-4.6V
     "GLM-4.6V-Flash": ModelSpec(
         name="GLM-4.6V-Flash",
         model_id="zai-org/GLM-4.6V-Flash",
@@ -89,9 +172,38 @@ MODEL_SPECS: dict[str, ModelSpec] = {
         dtype="bfloat16",
         attn_implementation="eager",
     ),
+    "GLM-4.6V": ModelSpec(
+        name="GLM-4.6V",
+        model_id="zai-org/GLM-4.6V",
+        trust_remote_code=True,
+        dtype="bfloat16",
+        attn_implementation="eager",
+    ),
+    # Gemma-4
     "gemma-4-E2B-it": ModelSpec(
         name="gemma-4-E2B-it",
         model_id="google/gemma-4-E2B-it",
+        trust_remote_code=True,
+        dtype="bfloat16",
+        attn_implementation="eager",
+    ),
+    "gemma-4-E4B-it": ModelSpec(
+        name="gemma-4-E4B-it",
+        model_id="google/gemma-4-E4B-it",
+        trust_remote_code=True,
+        dtype="bfloat16",
+        attn_implementation="eager",
+    ),
+    "gemma-4-26B-A4B-it": ModelSpec(
+        name="gemma-4-26B-A4B-it",
+        model_id="google/gemma-4-26B-A4B-it",
+        trust_remote_code=True,
+        dtype="bfloat16",
+        attn_implementation="eager",
+    ),
+    "gemma-4-31B-it": ModelSpec(
+        name="gemma-4-31B-it",
+        model_id="google/gemma-4-31B-it",
         trust_remote_code=True,
         dtype="bfloat16",
         attn_implementation="eager",
@@ -104,8 +216,13 @@ def _norm_model_name(name: str) -> str:
 
 
 _MODEL_NAME_ALIASES: dict[str, str] = {}
-for _name in MODEL_SPECS:
+for _name, _spec in MODEL_SPECS.items():
     _MODEL_NAME_ALIASES[_norm_model_name(_name)] = _name
+    # Also alias by the HF model_id (e.g. "google/gemma-4-E4B-it" -> "gemma-4-E4B-it")
+    _MODEL_NAME_ALIASES[_norm_model_name(_spec.model_id)] = _name
+    # And by just the repo name part after the slash
+    if "/" in _spec.model_id:
+        _MODEL_NAME_ALIASES[_norm_model_name(_spec.model_id.split("/", 1)[1])] = _name
 
 
 def list_supported_models() -> list[str]:
