@@ -1,5 +1,6 @@
 import json
 import logging
+import argparse
 import random
 import time
 import traceback
@@ -47,6 +48,42 @@ MODELS = [
     # "Llama-4-Scout-17B-16E-Instruct",
 ]
 
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Run VLM generation on sampled FineSightBench items."
+    )
+    parser.add_argument(
+        "--models",
+        nargs="+",
+        default=None,
+        help=(
+            "Models to run. Supports space-separated names and/or comma-separated "
+            "values (e.g. --models Qwen3-VL-2B-Instruct gemma-4-E2B-it or "
+            "--models Qwen3-VL-2B-Instruct,gemma-4-E2B-it)."
+        ),
+    )
+    parser.add_argument(
+        "--list-models",
+        action="store_true",
+        help="Print supported model names and exit.",
+    )
+    return parser.parse_args()
+
+
+args = parse_args()
+SUPPORTED_MODELS = list_supported_models()
+if args.list_models:
+    print("Supported models:", SUPPORTED_MODELS)
+    raise SystemExit(0)
+
+if args.models:
+    selected_models: list[str] = []
+    for item in args.models:
+        selected_models.extend([m.strip() for m in item.split(",") if m.strip()])
+else:
+    selected_models = MODELS
+
 # Decoding configurations to run for EVERY model.
 # Each produces its own JSONL: <model>__<cfg_name>.jsonl
 DECODING_CONFIGS = [
@@ -71,7 +108,8 @@ def output_path_for(model_name: str, cfg_name: str) -> Path:
     return OUTPUT_DIR / f"{_safe_filename(model_name)}__{_safe_filename(cfg_name)}.jsonl"
 
 
-print("Supported models :", list_supported_models())
+print("Supported models :", SUPPORTED_MODELS)
+print("Selected models  :", selected_models)
 print("Output dir       :", OUTPUT_DIR)
 
 
@@ -169,7 +207,7 @@ current_q_map: dict[tuple, str] = {
     for s in selected
 }
 
-for model_name in MODELS:
+for model_name in selected_models:
     try:
         resolved = resolve_model_name(model_name)
     except KeyError as exc:
