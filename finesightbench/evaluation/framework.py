@@ -707,6 +707,22 @@ class HuggingFaceVLM:
         self.processor: Any | None = None
         self.model: Any | None = None
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device_map: str = "auto" if torch.cuda.is_available() else "cpu"
+
+    def _build_max_memory(self) -> dict[str, str] | None:
+        """Leave VRAM headroom to reduce OOM from allocator/temporary buffers."""
+        if not torch.cuda.is_available():
+            return None
+
+        max_memory: dict[str, str] = {}
+        for i in range(torch.cuda.device_count()):
+            total_bytes = torch.cuda.get_device_properties(i).total_memory
+            # Keep ~10% free for runtime overhead and temporary tensors.
+            usable_gib = max(int((total_bytes / (1024**3)) * 0.9), 1)
+            max_memory[f"cuda:{i}"] = f"{usable_gib}GiB"
+        # Allow CPU offload fallback if GPU-only placement cannot fit.
+        max_memory["cpu"] = "256GiB"
+        return max_memory
 
     def _load_processor(self) -> Any:
         kwargs: dict[str, Any] = {
@@ -770,8 +786,10 @@ class HuggingFaceVLM:
         base_kwargs: dict[str, Any] = {
             "trust_remote_code": self.spec.trust_remote_code,
             "local_files_only": self.local_files_only,
-            "dtype": dtype,
-            "device_map": self.device,
+            "torch_dtype": dtype,
+            "device_map": self.device_map,
+            "max_memory": self._build_max_memory(),
+            "low_cpu_mem_usage": True,
         }
         if self.cache_dir is not None:
             base_kwargs["cache_dir"] = str(self.cache_dir)
