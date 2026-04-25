@@ -1,6 +1,7 @@
 import json
 import logging
 import argparse
+import os
 import random
 import time
 import traceback
@@ -99,6 +100,48 @@ OUTPUT_DIR = Path("outputs/vlm_eval_hf")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _parse_simple_dotenv(path: Path) -> dict[str, str]:
+    """Parse a minimal .env file format (KEY=VALUE, comments, optional quotes)."""
+    values: dict[str, str] = {}
+    with path.open(encoding="utf-8") as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+            if value and ((value[0] == value[-1]) and value[0] in {"\"", "'"}):
+                value = value[1:-1]
+            values[key] = value
+    return values
+
+
+def load_hf_token_from_env() -> bool:
+    """Load HF token from environment or .env and export common token variables."""
+    token = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_HUB_TOKEN")
+    if token:
+        os.environ.setdefault("HF_TOKEN", token)
+        os.environ.setdefault("HUGGINGFACE_HUB_TOKEN", token)
+        print("HF token source  : environment")
+        return True
+
+    env_candidates = [Path.cwd() / ".env", Path(__file__).resolve().parents[1] / ".env"]
+    for env_path in env_candidates:
+        if not env_path.exists():
+            continue
+        env_values = _parse_simple_dotenv(env_path)
+        token = env_values.get("HF_TOKEN") or env_values.get("HUGGINGFACE_HUB_TOKEN")
+        if token:
+            os.environ["HF_TOKEN"] = token
+            os.environ["HUGGINGFACE_HUB_TOKEN"] = token
+            print(f"HF token source  : {env_path}")
+            return True
+
+    print("HF token source  : not found (.env/env). Public-only access may fail.")
+    return False
+
+
 def _safe_filename(name: str) -> str:
     return "".join(c if c.isalnum() or c in "-._" else "_" for c in name)
 
@@ -111,6 +154,7 @@ def output_path_for(model_name: str, cfg_name: str) -> Path:
 print("Supported models :", SUPPORTED_MODELS)
 print("Selected models  :", selected_models)
 print("Output dir       :", OUTPUT_DIR)
+load_hf_token_from_env()
 
 
 
