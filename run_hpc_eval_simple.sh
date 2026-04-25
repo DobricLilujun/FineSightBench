@@ -1,19 +1,22 @@
-#!/bin/bash
+#!/bin/bash -l
 #SBATCH --job-name=finesightbench
-#SBATCH --partition=your_partition
-#SBATCH --account=your_account
+#SBATCH --partition gpu
+#SBATCH --account=p201223
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=128G
 #SBATCH --time=03:00:00
+#SBATCH -q default
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:2
+#SBATCH --chdir=/home/users/u101059/FineSightBench
 
 # 1) 基础目录
-WORKDIR="$HOME/work"
-REPO_DIR="$WORKDIR/FineSightBench"
+WORKDIR="/home/users/u101059/FineSightBench"
+echo "Working directory: $WORKDIR"
+REPO_DIR="$WORKDIR"
 mkdir -p "$WORKDIR"
 cd "$WORKDIR"
 
@@ -23,31 +26,26 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 export PATH="$HOME/.local/bin:$PATH"
 
-# 3) 克隆或更新仓库
-if [ ! -d "$REPO_DIR/.git" ]; then
-  git clone https://github.com/DobricLilujun/FineSightBench.git
-else
-  cd "$REPO_DIR"
+# 3) 更新仓库
+if [ -d "$REPO_DIR/.git" ]; then
   git pull --ff-only
-  cd "$WORKDIR"
+else
+  echo "Repo not found at $REPO_DIR"
+  exit 1
 fi
 
 cd "$REPO_DIR"
 mkdir -p logs
 
-# 4) 可选模块加载（你们集群如果不用 module，就删掉）
-module purge || true
-module load python/3.11 || true
-module load cuda/12.1 || true
-
-
-cd FineSightBench
 
 # 5) 创建虚拟环境
 if [ ! -d ".venv" ]; then
   uv venv --python 3.11 .venv
 fi
+
+nvidia-smi 
 source .venv/bin/activate
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # # 6) 安装依赖（优先锁文件）
 # if [ -f "uv.lock" ] && [ -f "pyproject.toml" ]; then
