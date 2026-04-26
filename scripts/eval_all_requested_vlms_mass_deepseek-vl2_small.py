@@ -32,8 +32,8 @@ HF_DATASET_IDS = [
 SPLITS = ["perception", "reasoning"]
 
 MODELS = [
-    "deepseek-vl2-tiny",
-    # "deepseek-vl2-small",
+    # "deepseek-vl2-tiny",
+    "deepseek-vl2-small",
 ]
 
 # Decoding configurations to run for EVERY model.
