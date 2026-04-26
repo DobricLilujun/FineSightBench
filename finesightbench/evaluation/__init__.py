@@ -2,6 +2,11 @@
 
 from .framework import (
     MODEL_SPECS,
+    API_MODEL_SPECS,
+    APIModelSpec,
+    OpenAIVLM,
+    GoogleVLM,
+    create_runner,
     list_supported_models,
     validate_val_dataset,
     evaluate_model_on_val_data,
@@ -25,6 +30,11 @@ from .json_metrics import (
 
 __all__ = [
     "MODEL_SPECS",
+    "API_MODEL_SPECS",
+    "APIModelSpec",
+    "OpenAIVLM",
+    "GoogleVLM",
+    "create_runner",
     "list_supported_models",
     "validate_val_dataset",
     "evaluate_model_on_val_data",

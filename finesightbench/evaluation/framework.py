@@ -14,6 +14,7 @@ import csv
 import io
 import json
 import math
+import os
 import random
 import re
 import time
@@ -211,6 +212,37 @@ MODEL_SPECS: dict[str, ModelSpec] = {
 }
 
 
+@dataclass(frozen=True)
+class APIModelSpec:
+    """Specification for API-based VLMs (OpenAI, Google, etc.)."""
+
+    name: str
+    model_id: str
+    provider: str      # "openai" or "google"
+    max_tokens: int = 1024
+    notes: str = ""
+
+
+API_MODEL_SPECS: dict[str, APIModelSpec] = {
+    # OpenAI
+    "gpt-4o": APIModelSpec(
+        name="gpt-4o",
+        model_id="gpt-4o",
+        provider="openai",
+        max_tokens=1024,
+        notes="Requires OPENAI_API_KEY environment variable.",
+    ),
+    # Google Gemini
+    "gemini-2.5-flash-preview": APIModelSpec(
+        name="gemini-2.5-flash-preview",
+        model_id="gemini-2.5-flash",
+        provider="google",
+        max_tokens=1024,
+        notes="Requires GOOGLE_API_KEY or GEMINI_API_KEY environment variable.",
+    ),
+}
+
+
 def _norm_model_name(name: str) -> str:
     return re.sub(r"[^a-z0-9]", "", name.lower())
 
@@ -224,17 +256,26 @@ for _name, _spec in MODEL_SPECS.items():
     if "/" in _spec.model_id:
         _MODEL_NAME_ALIASES[_norm_model_name(_spec.model_id.split("/", 1)[1])] = _name
 
+_API_MODEL_NAME_ALIASES: dict[str, str] = {}
+for _name, _spec in API_MODEL_SPECS.items():
+    _API_MODEL_NAME_ALIASES[_norm_model_name(_name)] = _name
+    _API_MODEL_NAME_ALIASES[_norm_model_name(_spec.model_id)] = _name
+
 
 def list_supported_models() -> list[str]:
-    return list(MODEL_SPECS.keys())
+    return list(MODEL_SPECS.keys()) + list(API_MODEL_SPECS.keys())
 
 
 def resolve_model_name(name: str) -> str:
     if name in MODEL_SPECS:
         return name
+    if name in API_MODEL_SPECS:
+        return name
     key = _norm_model_name(name)
     if key in _MODEL_NAME_ALIASES:
         return _MODEL_NAME_ALIASES[key]
+    if key in _API_MODEL_NAME_ALIASES:
+        return _API_MODEL_NAME_ALIASES[key]
     raise KeyError(
         f"Unknown model '{name}'. Supported: {', '.join(list_supported_models())}"
     )
@@ -1316,6 +1357,168 @@ class HuggingFaceVLM:
             "vis_range": (vis_start, vis_end),
             "grid": (t_dim, grid_h, grid_w),
         }
+
+
+# -----------------------------------------------------------------------------
+# OpenAI VLM adapter (GPT-4o, etc.)
+# -----------------------------------------------------------------------------
+
+
+class OpenAIVLM:
+    """Adapter for OpenAI vision models (GPT-4o, etc.) via the OpenAI API.
+
+    Requires ``openai`` package (``pip install openai``) and the
+    ``OPENAI_API_KEY`` environment variable.
+    """
+
+    def __init__(self, spec: APIModelSpec) -> None:
+        if spec.provider != "openai":
+            raise ValueError(f"OpenAIVLM expects provider='openai', got '{spec.provider}'.")
+        self.spec = spec
+        self._client: Any | None = None
+
+    def load(self) -> None:
+        try:
+            import openai  # type: ignore[import]
+        except ImportError as exc:
+            raise ImportError(
+                "openai package is required for GPT-4o evaluation. "
+                "Install it with: pip install openai"
+            ) from exc
+        api_key = os.environ.get("OPENAI_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "OPENAI_API_KEY environment variable is not set. "
+                "Set it before running GPT-4o evaluation."
+            )
+        self._client = openai.OpenAI(api_key=api_key)
+
+    def unload(self) -> None:
+        self._client = None
+
+    def predict(
+        self,
+        image: Image.Image,
+        question: str,
+        *,
+        do_sample: bool = False,
+        temperature: float = 1.0,
+    ) -> str:
+        if self._client is None:
+            raise RuntimeError("Call load() before predict().")
+
+        # Encode image as base64 PNG.
+        buf = io.BytesIO()
+        image.convert("RGB").save(buf, format="PNG")
+        import base64
+        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+
+        # temperature=0 for greedy; otherwise use provided value.
+        api_temp = 0.0 if not do_sample else float(temperature)
+
+        response = self._client.chat.completions.create(
+            model=self.spec.model_id,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,{b64}"},
+                        },
+                        {"type": "text", "text": question},
+                    ],
+                }
+            ],
+            max_tokens=self.spec.max_tokens,
+            temperature=api_temp,
+        )
+        return response.choices[0].message.content.strip()
+
+
+# -----------------------------------------------------------------------------
+# Google Gemini VLM adapter
+# -----------------------------------------------------------------------------
+
+
+class GoogleVLM:
+    """Adapter for Google Gemini vision models via the Google Generative AI API.
+
+    Requires ``google-generativeai`` package
+    (``pip install google-generativeai``) and the ``GOOGLE_API_KEY`` or
+    ``GEMINI_API_KEY`` environment variable.
+    """
+
+    def __init__(self, spec: APIModelSpec) -> None:
+        if spec.provider != "google":
+            raise ValueError(f"GoogleVLM expects provider='google', got '{spec.provider}'.")
+        self.spec = spec
+        self._model: Any | None = None
+
+    def load(self) -> None:
+        try:
+            import google.generativeai as genai  # type: ignore[import]
+        except ImportError as exc:
+            raise ImportError(
+                "google-generativeai package is required for Gemini evaluation. "
+                "Install it with: pip install google-generativeai"
+            ) from exc
+        api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "GOOGLE_API_KEY or GEMINI_API_KEY environment variable is not set. "
+                "Set it before running Gemini evaluation."
+            )
+        genai.configure(api_key=api_key)
+        self._model = genai.GenerativeModel(self.spec.model_id)
+
+    def unload(self) -> None:
+        self._model = None
+
+    def predict(
+        self,
+        image: Image.Image,
+        question: str,
+        *,
+        do_sample: bool = False,
+        temperature: float = 1.0,
+    ) -> str:
+        if self._model is None:
+            raise RuntimeError("Call load() before predict().")
+
+        import google.generativeai as genai  # type: ignore[import]
+
+        api_temp = 0.0 if not do_sample else float(temperature)
+        generation_config = genai.GenerationConfig(
+            max_output_tokens=self.spec.max_tokens,
+            temperature=api_temp,
+        )
+        response = self._model.generate_content(
+            [image.convert("RGB"), question],
+            generation_config=generation_config,
+        )
+        return response.text.strip()
+
+
+def create_runner(model_name: str, *, allow_download: bool = True) -> Any:
+    """Factory that returns the appropriate runner for *model_name*.
+
+    Returns a ``HuggingFaceVLM`` for local HuggingFace models, an
+    ``OpenAIVLM`` for OpenAI models, or a ``GoogleVLM`` for Google models.
+    All returned objects expose the same ``load() / predict() / unload()``
+    interface.
+    """
+    resolved = resolve_model_name(model_name)
+    if resolved in MODEL_SPECS:
+        return HuggingFaceVLM(MODEL_SPECS[resolved], local_files_only=not allow_download)
+    if resolved in API_MODEL_SPECS:
+        spec = API_MODEL_SPECS[resolved]
+        if spec.provider == "openai":
+            return OpenAIVLM(spec)
+        if spec.provider == "google":
+            return GoogleVLM(spec)
+        raise ValueError(f"Unknown API provider '{spec.provider}' for model '{resolved}'.")
+    raise KeyError(f"Model '{resolved}' not found in any registry.")
 
 
 # -----------------------------------------------------------------------------
