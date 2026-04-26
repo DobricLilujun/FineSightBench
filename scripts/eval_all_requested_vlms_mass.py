@@ -119,7 +119,7 @@ def _parse_simple_dotenv(path: Path) -> dict[str, str]:
 
 def load_hf_token_from_env() -> bool:
     """Load HF token from environment or .env and export common token variables."""
-    token = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_HUB_TOKEN")
+    token = os.getenv("HF_TOKEN") or os.getenv("")
     if token:
         os.environ.setdefault("HF_TOKEN", token)
         os.environ.setdefault("HUGGINGFACE_HUB_TOKEN", token)

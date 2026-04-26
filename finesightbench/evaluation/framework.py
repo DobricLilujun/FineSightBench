@@ -466,7 +466,92 @@ def _split_list(text: str) -> list[str]:
     return parts
 
 
+# -----------------------------------------------------------------------------
+# JSON-output evaluation (per-field comparison)
+#
+# Borrowed from the zoom-decoder evaluator: VLM answers are expected to be
+# JSON; we compare them per field rather than as a single normalized string.
+# -----------------------------------------------------------------------------
+
+
+def _normalise_json_value(s: Any) -> str:
+    """Normalise a JSON scalar for comparison: strip all whitespace, lowercase."""
+    return re.sub(r"\s+", "", str(s)).lower()
+
+
+def parse_json_safe(s: str) -> dict | None:
+    """Best-effort parse of a JSON object embedded in a model output.
+
+    Strips optional code fences, then searches for the first ``{...}`` block
+    (greedy across newlines) and tries ``json.loads`` on it. Returns ``None``
+    if no valid JSON object can be recovered.
+    """
+    if s is None:
+        return None
+    text = str(s).strip()
+    if not text:
+        return None
+    m = re.search(r"\{.*\}", text, flags=re.DOTALL)
+    if not m:
+        return None
+    try:
+        obj = json.loads(m.group(0))
+    except Exception:
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def is_correct_json(pred_str: str, gt_str: str) -> bool:
+    """Strict per-field JSON correctness check.
+
+    Both ``pred_str`` and ``gt_str`` must yield JSON objects with identical
+    key sets. Each value is then compared by type:
+      * scalars (str/int/float/bool/None): whitespace-stripped, lowercased
+      * dicts: keys and values both normalised the same way
+      * lists: element-wise, ordered, after the same normalisation
+    Returns ``False`` on any parse failure or mismatch.
+    """
+    pred = parse_json_safe(pred_str)
+    gt = parse_json_safe(gt_str) or {}
+    if pred is None or not gt:
+        return False
+    if set(pred.keys()) != set(gt.keys()):
+        return False
+    for k, vgt in gt.items():
+        vp = pred.get(k)
+        if isinstance(vgt, (str, int, float, bool)) or vgt is None:
+            if _normalise_json_value(vp) != _normalise_json_value(vgt):
+                return False
+        elif isinstance(vgt, dict):
+            if not isinstance(vp, dict):
+                return False
+            gtn = {_normalise_json_value(kk): _normalise_json_value(vv) for kk, vv in vgt.items()}
+            pn = {_normalise_json_value(kk): _normalise_json_value(vv) for kk, vv in vp.items()}
+            if gtn != pn:
+                return False
+        elif isinstance(vgt, list):
+            if not isinstance(vp, list):
+                return False
+            if [_normalise_json_value(x) for x in vgt] != [_normalise_json_value(x) for x in vp]:
+                return False
+        else:
+            if str(vp) != str(vgt):
+                return False
+    return True
+
+
+def _looks_like_json_object(text: str) -> bool:
+    if not text:
+        return False
+    t = text.strip()
+    return t.startswith("{") and t.endswith("}")
+
+
 def is_correct_prediction(pred: str, gt: str, task_type: str) -> bool:
+    # If the ground-truth is a JSON object, evaluate per-field via JSON parsing.
+    if _looks_like_json_object(gt):
+        return is_correct_json(pred, gt)
+
     p = normalize_text(pred)
     g = normalize_text(gt)
 

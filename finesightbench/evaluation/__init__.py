@@ -6,6 +6,9 @@ from .framework import (
     validate_val_dataset,
     evaluate_model_on_val_data,
     evaluate_models_on_val_data,
+    parse_json_safe,
+    is_correct_json,
+    is_correct_prediction,
 )
 from .json_metrics import (
     FieldSpec,
@@ -26,6 +29,9 @@ __all__ = [
     "validate_val_dataset",
     "evaluate_model_on_val_data",
     "evaluate_models_on_val_data",
+    "parse_json_safe",
+    "is_correct_json",
+    "is_correct_prediction",
     "FieldSpec",
     "JSONEvalResult",
     "SCALAR",
