@@ -6,11 +6,13 @@ import time
 import traceback
 import warnings
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 
 # Suppress noisy but harmless warnings from PyTorch and transformers.
 warnings.filterwarnings("ignore", message=".*use_reentrant.*", category=UserWarning)
 warnings.filterwarnings("ignore", message=".*None of the inputs have requires_grad.*", category=UserWarning)
+warnings.filterwarnings("ignore", message=".*`resume_download` is deprecated.*", category=FutureWarning)
 
 # "Setting `pad_token_id` to `eos_token_id`" comes from the transformers logger,
 # not warnings - silence it at the logging level.
@@ -22,7 +24,40 @@ from datasets import load_dataset
 from PIL import Image
 from tqdm.auto import tqdm
 
-from finesightbench.evaluation.framework import MODEL_SPECS, list_supported_models, resolve_model_name
+
+@dataclass(frozen=True)
+class ModelSpec:
+    name: str
+    model_id: str
+    max_new_tokens: int = 1024
+
+
+MODEL_SPECS: dict[str, ModelSpec] = {
+    "deepseek-vl2-tiny": ModelSpec(
+        name="deepseek-vl2-tiny",
+        model_id="deepseek-ai/deepseek-vl2-tiny",
+    ),
+    "deepseek-vl2-small": ModelSpec(
+        name="deepseek-vl2-small",
+        model_id="deepseek-ai/deepseek-vl2-small",
+    ),
+}
+
+
+def list_supported_models() -> list[str]:
+    return list(MODEL_SPECS.keys())
+
+
+def resolve_model_name(name: str) -> str:
+    if name in MODEL_SPECS:
+        return name
+
+    normalized = name.strip().lower()
+    for candidate in MODEL_SPECS:
+        if candidate.lower() == normalized:
+            return candidate
+
+    raise KeyError(f"Unknown model '{name}'. Supported: {', '.join(list_supported_models())}")
 
 
 # --- Config -------------------------------------------------------------------
@@ -48,7 +83,9 @@ SEED = 42
 ALLOW_DOWNLOAD = True  # set False to force local cache only
 OUTPUT_DIR = Path("outputs/vlm_eval_hf")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+if not torch.cuda.is_available():
+    raise RuntimeError("CUDA GPU is required for this script, but no CUDA device is available.")
+DEVICE = "cuda"
 
 
 def _safe_filename(name: str) -> str:
@@ -253,18 +290,11 @@ class DeepSeekVL2Runner:
     def load(self) -> None:
         self._patch_transformers_for_deepseek()
 
-        from transformers import GenerationMixin
-        from deepseek_vl2.models import DeepseekVLV2ForCausalLM, DeepseekVLV2Processor
-        from deepseek_vl2.models.modeling_deepseek import DeepseekV2ForCausalLM
+        from transformers import AutoModelForCausalLM
+        from deepseek_vl2.models import DeepseekVLV2Processor
 
         # Apply after deepseek_vl2 import so we can patch its SigLIP class method.
         self._patch_siglip_attention_fallback()
-
-        DeepseekVLV2ForCausalLM.all_tied_weights_keys = {}
-        DeepseekV2ForCausalLM.all_tied_weights_keys = {}
-        for cls in (DeepseekV2ForCausalLM, DeepseekVLV2ForCausalLM):
-            if GenerationMixin not in cls.__mro__:
-                cls.__bases__ = (GenerationMixin,) + cls.__bases__
 
         self.vl_processor = DeepseekVLV2Processor.from_pretrained(
             self.spec.model_id,
@@ -273,47 +303,13 @@ class DeepSeekVL2Runner:
         )
         self.tokenizer = self.vl_processor.tokenizer
 
-        config_cls = getattr(DeepseekVLV2ForCausalLM, "config_class", None)
-        if config_cls is None or not hasattr(config_cls, "from_pretrained"):
-            raise RuntimeError("DeepseekVLV2ForCausalLM has no usable config_class")
-
-        model_config = config_cls.from_pretrained(
+        self.model = AutoModelForCausalLM.from_pretrained(
             self.spec.model_id,
             token=self.hf_token,
             trust_remote_code=True,
             local_files_only=not self.allow_download,
         )
-        self._normalize_rope_scaling(model_config)
-
-        self.model = DeepseekVLV2ForCausalLM.from_pretrained(
-            self.spec.model_id,
-            config=model_config,
-            token=self.hf_token,
-            dtype=torch.bfloat16,
-            device_map=DEVICE,
-            trust_remote_code=True,
-            attn_implementation="eager",
-            local_files_only=not self.allow_download,
-        )
-
-        # transformers 5 can skip custom checkpoint weights for deepseek_vl2.
-        from huggingface_hub import snapshot_download
-        from safetensors.torch import load_file
-
-        snap = snapshot_download(
-            self.spec.model_id,
-            token=self.hf_token,
-            allow_patterns=["*.safetensors", "*.json"],
-            local_files_only=not self.allow_download,
-        )
-        shards = sorted(Path(snap).glob("model*.safetensors"))
-        state = {}
-        for shard in shards:
-            state.update(load_file(str(shard)))
-        self.model.load_state_dict(state, strict=False)
-
-        self.model.to(dtype=torch.bfloat16)
-        self.model.eval()
+        self.model = self.model.to(torch.bfloat16).cuda().eval()
 
     def unload(self) -> None:
         self.model = None
@@ -333,46 +329,28 @@ class DeepSeekVL2Runner:
             force_batchify=True,
             system_prompt="",
         )
-        return prepare.to(DEVICE, dtype=torch.bfloat16)
+        return prepare.to(self.model.device, dtype=torch.bfloat16)
 
     @torch.no_grad()
     def predict(self, image: Image.Image, question: str, do_sample: bool, temperature: float) -> str:
         prepare = self._build_inputs(image, question)
         inputs_embeds = self.model.prepare_inputs_embeds(**prepare)
-        attn_mask = prepare.attention_mask
-        embed_layer = self.model.language.get_input_embeddings()
-        eos_id = self.tokenizer.eos_token_id
 
-        generated: list[int] = []
-        cur_embeds, cur_mask = inputs_embeds, attn_mask
-        for _ in range(int(self.spec.max_new_tokens)):
-            out = self.model.language.model(
-                inputs_embeds=cur_embeds,
-                attention_mask=cur_mask,
-                use_cache=False,
-                return_dict=True,
-            )
-            logits = self.model.language.lm_head(out.last_hidden_state[:, -1, :])
+        gen_kwargs = dict(
+            inputs_embeds=inputs_embeds,
+            attention_mask=prepare.attention_mask,
+            pad_token_id=self.tokenizer.eos_token_id,
+            bos_token_id=self.tokenizer.bos_token_id,
+            eos_token_id=self.tokenizer.eos_token_id,
+            max_new_tokens=int(self.spec.max_new_tokens),
+            do_sample=do_sample,
+            use_cache=True,
+        )
+        if do_sample:
+            gen_kwargs["temperature"] = max(float(temperature), 1e-5)
 
-            if do_sample:
-                t = max(float(temperature), 1e-5)
-                probs = torch.softmax(logits / t, dim=-1)
-                next_id = int(torch.multinomial(probs, num_samples=1).item())
-            else:
-                next_id = int(logits.argmax(dim=-1).item())
-
-            if next_id == eos_id:
-                break
-            generated.append(next_id)
-
-            next_emb = embed_layer(torch.tensor([[next_id]], device=DEVICE)).to(cur_embeds.dtype)
-            cur_embeds = torch.cat([cur_embeds, next_emb], dim=1)
-            cur_mask = torch.cat(
-                [cur_mask, torch.ones((1, 1), dtype=cur_mask.dtype, device=DEVICE)],
-                dim=1,
-            )
-
-        return self.tokenizer.decode(generated, skip_special_tokens=True).strip()
+        outputs = self.model.language.generate(**gen_kwargs)
+        return self.tokenizer.decode(outputs[0].cpu().tolist(), skip_special_tokens=True).strip()
 
 
 print("Supported models :", list_supported_models())
