@@ -32,6 +32,11 @@ import matplotlib
 from transformers import AutoModelForCausalLM, AutoModelForImageTextToText, AutoProcessor
 
 try:
+    from transformers import Glm4vMoeForConditionalGeneration
+except Exception:  # pragma: no cover
+    Glm4vMoeForConditionalGeneration = None
+
+try:
     from transformers import AutoModelForVision2Seq
 except Exception:  # pragma: no cover
     AutoModelForVision2Seq = None
@@ -920,7 +925,37 @@ class HuggingFaceVLM:
         loaders.append(AutoModel)
         return loaders
 
+    def _is_glm46v_fp8(self) -> bool:
+        model_id = self.spec.model_id.strip().lower()
+        model_name = self.spec.name.strip().lower()
+        return model_id.endswith("glm-4.6v-fp8") or model_name == "glm-4.6v-fp8"
+
+    def _load_glm46v_fp8_model(self) -> Any:
+        """Load GLM-4.6V-FP8 using the official HF model class and kwargs."""
+        if Glm4vMoeForConditionalGeneration is None:
+            raise RuntimeError(
+                "GLM-4.6V-FP8 requires Glm4vMoeForConditionalGeneration. "
+                "Please upgrade transformers (>=5.0.0rc0)."
+            )
+
+        kwargs: dict[str, Any] = {
+            "pretrained_model_name_or_path": self.spec.model_id,
+            "torch_dtype": "auto",
+            "device_map": "auto",
+            "trust_remote_code": self.spec.trust_remote_code,
+            "local_files_only": self.local_files_only,
+        }
+        if self.cache_dir is not None:
+            kwargs["cache_dir"] = str(self.cache_dir)
+
+        model = Glm4vMoeForConditionalGeneration.from_pretrained(**kwargs)
+        model.eval()
+        return model
+
     def _load_model(self) -> Any:
+        if self._is_glm46v_fp8():
+            return self._load_glm46v_fp8_model()
+
         torch_dtype_arg: Any
         if _is_auto_dtype(self.spec.dtype):
             torch_dtype_arg = "auto"
@@ -1094,6 +1129,30 @@ class HuggingFaceVLM:
 
     def _build_inputs(self, image: Image.Image, question: str) -> dict[str, Any]:
         assert self.processor is not None
+
+        # GLM-4.6V-FP8: use official HF inference path.
+        if self._is_glm46v_fp8():
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "image": image},
+                        {"type": "text", "text": question},
+                    ],
+                }
+            ]
+            inputs = self.processor.apply_chat_template(
+                messages,
+                tokenize=True,
+                add_generation_prompt=True,
+                return_dict=True,
+                return_tensors="pt",
+            )
+            inputs.pop("token_type_ids", None)
+            if self.model is not None:
+                inputs = inputs.to(self.model.device)
+                return dict(inputs)
+            return self._to_device(inputs)
 
         # GLM-4.6V family: follow official processor.apply_chat_template(..., tokenize=True)
         # path to avoid dtype/layout incompatibilities.
@@ -1279,6 +1338,34 @@ class HuggingFaceVLM:
             response = self.model.chat(tokenizer, pixel_values, prompt, generation_config)
         return response if isinstance(response, str) else str(response)
 
+    def _predict_glm46v_fp8(
+        self,
+        image: Image.Image,
+        question: str,
+        *,
+        do_sample: bool = False,
+        temperature: float = 1.0,
+    ) -> str:
+        """Official GLM-4.6V-FP8 generation flow."""
+        assert self.model is not None and self.processor is not None
+
+        inputs = self._build_inputs(image, question)
+        input_len = int(inputs["input_ids"].shape[1]) if "input_ids" in inputs else 0
+
+        gen_kwargs: dict[str, Any] = {
+            "max_new_tokens": self.spec.max_new_tokens,
+            "do_sample": do_sample,
+        }
+        if do_sample:
+            gen_kwargs["temperature"] = temperature
+
+        with torch.no_grad():
+            generated_ids = self.model.generate(**inputs, **gen_kwargs)
+
+        answer_ids = generated_ids[0][input_len:]
+        output_text = self.processor.decode(answer_ids, skip_special_tokens=False)
+        return output_text.strip()
+
     def predict(
         self,
         image: Image.Image,
@@ -1288,6 +1375,14 @@ class HuggingFaceVLM:
         temperature: float = 1.0,
     ) -> str:
         assert self.model is not None and self.processor is not None
+
+        if self._is_glm46v_fp8():
+            return self._predict_glm46v_fp8(
+                image,
+                question,
+                do_sample=do_sample,
+                temperature=temperature,
+            )
 
         # InternVL has a custom .chat() API that handles prompting correctly.
         if "internvl" in self.spec.model_id.lower():
