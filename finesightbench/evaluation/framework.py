@@ -1032,6 +1032,22 @@ class HuggingFaceVLM:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
+    def _safe_input_dtype(self) -> torch.dtype:
+        """Return a compute-safe floating dtype for model inputs.
+
+        Some FP8 checkpoints expose FP8 parameter dtypes, but common matmul
+        kernels still expect FP16/BF16/FP32 activations. Feeding FP8 activations
+        can raise runtime errors.
+        """
+        preferred = _resolve_torch_dtype(self.spec.dtype)
+        if preferred in {torch.float16, torch.bfloat16, torch.float32}:
+            return preferred
+
+        # Fallback for exotic/quantized dtypes (including float8 variants).
+        if torch.cuda.is_available():
+            return torch.float16
+        return torch.float32
+
     def _to_device(self, batch: dict[str, Any]) -> dict[str, Any]:
         out: dict[str, Any] = {}
         target = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -1042,12 +1058,19 @@ class HuggingFaceVLM:
                 model_dtype = next(self.model.parameters()).dtype
             except StopIteration:
                 pass
+
+        # Never force inputs to float8; keep activations in compute-safe dtype.
+        if model_dtype in {torch.float16, torch.bfloat16, torch.float32}:
+            cast_dtype = model_dtype
+        else:
+            cast_dtype = self._safe_input_dtype()
+
         for k, v in batch.items():
             if torch.is_tensor(v):
                 v = v.to(target)
                 # Cast float tensors to match the model dtype to avoid dtype mismatch errors
-                if model_dtype is not None and v.is_floating_point() and v.dtype != model_dtype:
-                    v = v.to(model_dtype)
+                if v.is_floating_point() and v.dtype != cast_dtype:
+                    v = v.to(cast_dtype)
                 out[k] = v
             else:
                 out[k] = v
