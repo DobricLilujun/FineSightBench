@@ -31,6 +31,15 @@ HF_DATASET_IDS = [
     "Volavion/FineSightBench",
 ]
 SPLITS = ["perception", "reasoning"]
+
+# Optional: map a model name to a local directory path.
+# If a model name appears here, its local path is used instead of downloading
+# from Hugging Face.  Leave empty ({}) to always use HF Hub.
+# Example:
+#   LOCAL_MODEL_PATHS = {
+#       "gemma-4-E2B-it": "/data/models/gemma-4-E2B-it",
+#   }
+LOCAL_MODEL_PATHS: dict[str, str] = {}
 # MODELS = [
 #     "Qwen3-VL-2B-Instruct",
 #     "InternVL3_5-1B-Flash",
@@ -179,6 +188,13 @@ for model_name in MODELS:
 
     spec = MODEL_SPECS[resolved]
 
+    # Override model_id with a local directory path if one was supplied.
+    local_path = LOCAL_MODEL_PATHS.get(model_name) or LOCAL_MODEL_PATHS.get(resolved)
+    if local_path:
+        from dataclasses import replace as _dc_replace
+        spec = _dc_replace(spec, model_id=local_path)
+        print(f"  [local] using local path: {local_path}")
+
     # Figure out which cfgs still have work to do before loading the model.
     cfg_todo: list[tuple[dict, Path, set[tuple], list[dict]]] = []
     for cfg in DECODING_CONFIGS:
@@ -199,7 +215,9 @@ for model_name in MODELS:
         continue
 
     # Load the model once, reuse across all cfgs.
-    runner = HuggingFaceVLM(spec, local_files_only=not ALLOW_DOWNLOAD)
+    # If a local path was given, always use local_files_only=True.
+    _local_files_only = True if local_path else (not ALLOW_DOWNLOAD)
+    runner = HuggingFaceVLM(spec, local_files_only=_local_files_only)
     try:
         t0 = time.time()
         runner.load()
