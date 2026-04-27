@@ -180,6 +180,13 @@ MODEL_SPECS: dict[str, ModelSpec] = {
         dtype="bfloat16",
         attn_implementation="eager",
     ),
+    "GLM-4.6V-FP8": ModelSpec(
+        name="GLM-4.6V-FP8",
+        model_id="zai-org/GLM-4.6V-FP8",
+        trust_remote_code=True,
+        dtype="float16",
+        attn_implementation="eager",
+    ),
     # Gemma-4
     "gemma-4-E2B-it": ModelSpec(
         name="gemma-4-E2B-it",
