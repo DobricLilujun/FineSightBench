@@ -184,7 +184,7 @@ MODEL_SPECS: dict[str, ModelSpec] = {
         name="GLM-4.6V-FP8",
         model_id="zai-org/GLM-4.6V-FP8",
         trust_remote_code=True,
-        dtype="float16",
+        dtype="auto",
         attn_implementation="eager",
     ),
     # Gemma-4
@@ -826,6 +826,10 @@ def _resolve_torch_dtype(dtype_name: str) -> torch.dtype:
     return torch.bfloat16 if torch.cuda.is_available() else torch.float32
 
 
+def _is_auto_dtype(dtype_name: str) -> bool:
+    return dtype_name.strip().lower() == "auto"
+
+
 class HuggingFaceVLM:
     def __init__(
         self,
@@ -917,11 +921,16 @@ class HuggingFaceVLM:
         return loaders
 
     def _load_model(self) -> Any:
-        dtype = _resolve_torch_dtype(self.spec.dtype)
+        torch_dtype_arg: Any
+        if _is_auto_dtype(self.spec.dtype):
+            torch_dtype_arg = "auto"
+        else:
+            torch_dtype_arg = _resolve_torch_dtype(self.spec.dtype)
+
         base_kwargs: dict[str, Any] = {
             "trust_remote_code": self.spec.trust_remote_code,
             "local_files_only": self.local_files_only,
-            "torch_dtype": dtype,
+            "torch_dtype": torch_dtype_arg,
             "device_map": self.device_map,
             "max_memory": self._build_max_memory(),
             "low_cpu_mem_usage": True,
@@ -1039,7 +1048,10 @@ class HuggingFaceVLM:
         kernels still expect FP16/BF16/FP32 activations. Feeding FP8 activations
         can raise runtime errors.
         """
-        preferred = _resolve_torch_dtype(self.spec.dtype)
+        if _is_auto_dtype(self.spec.dtype):
+            preferred = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+        else:
+            preferred = _resolve_torch_dtype(self.spec.dtype)
         if preferred in {torch.float16, torch.bfloat16, torch.float32}:
             return preferred
 
@@ -1065,11 +1077,15 @@ class HuggingFaceVLM:
         else:
             cast_dtype = self._safe_input_dtype()
 
+        # GLM-4.6V-FP8 works best with processor defaults + .to(model.device)
+        # (official usage), so avoid extra float casting here.
+        skip_float_cast = "glm4v" in self.spec.model_id.lower() or "glm-4.6v" in self.spec.model_id.lower()
+
         for k, v in batch.items():
             if torch.is_tensor(v):
                 v = v.to(target)
                 # Cast float tensors to match the model dtype to avoid dtype mismatch errors
-                if v.is_floating_point() and v.dtype != cast_dtype:
+                if (not skip_float_cast) and v.is_floating_point() and v.dtype != cast_dtype:
                     v = v.to(cast_dtype)
                 out[k] = v
             else:
@@ -1078,6 +1094,29 @@ class HuggingFaceVLM:
 
     def _build_inputs(self, image: Image.Image, question: str) -> dict[str, Any]:
         assert self.processor is not None
+
+        # GLM-4.6V family: follow official processor.apply_chat_template(..., tokenize=True)
+        # path to avoid dtype/layout incompatibilities.
+        if "glm4v" in self.spec.model_id.lower() or "glm-4.6v" in self.spec.model_id.lower():
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "image": image},
+                        {"type": "text", "text": question},
+                    ],
+                }
+            ]
+            inputs = self.processor.apply_chat_template(
+                messages,
+                tokenize=True,
+                add_generation_prompt=True,
+                return_dict=True,
+                return_tensors="pt",
+            )
+            # GLM chat template can emit token_type_ids not expected by some checkpoints.
+            inputs.pop("token_type_ids", None)
+            return self._to_device(inputs)
 
         # InternVL requires an explicit <image> placeholder in the prompt text.
         if "internvl" in self.spec.model_id.lower():
