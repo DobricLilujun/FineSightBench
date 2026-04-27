@@ -34,16 +34,36 @@ SPLITS = ["perception", "reasoning"]
 
 # Optional: map a model name to a local directory path.
 # If a model name appears here, its local path is used instead of downloading
-# from Hugging Face.  Leave empty ({}) to always use HF Hub.
+# from Hugging Face.
 # Example:
 #   LOCAL_MODEL_PATHS = {
 #       "GLM-4.6V-FP8": "/data/models/GLM-4.6V-FP8",
+#       "gemma-4-E2B-it": "/data/models/gemma-4-E2B-it",
 #   }
 LOCAL_MODEL_PATHS: dict[str, str] = {}
 
+# Optional: map a HF dataset ID to a local directory path.
+# When specified, load_dataset will use the local parquet files instead of downloading.
+# Example:
+#   LOCAL_DATASET_PATHS = {
+#       "Volavion/FineSightBench": "/path/to/local/FineSightBench",
+#   }
+LOCAL_DATASET_PATHS: dict[str, str] = {}
+
+# Model(s) to evaluate - only one model at a time for full dataset
 MODELS = [
     "GLM-4.6V-FP8",
 ]
+
+# Control download behavior for models:
+#   True  = allow downloading from HF Hub if not in cache/LOCAL_MODEL_PATHS
+#   False = only use cached or LOCAL_MODEL_PATHS models (fail if not available locally)
+ALLOW_DOWNLOAD = False
+
+# Control download behavior for datasets:
+#   True  = allow downloading from HF Hub if not in cache/LOCAL_DATASET_PATHS
+#   False = only use cached or LOCAL_DATASET_PATHS datasets (fail if not available locally)
+ALLOW_DATASET_DOWNLOAD = False
 
 # Decoding configurations to run for EVERY model.
 # Each produces its own JSONL: <model>__<cfg_name>.jsonl
@@ -53,10 +73,10 @@ DECODING_CONFIGS = [
     {"name": "sample_t10", "do_sample": True,  "temperature": 1.0},
 ]
 
-SAMPLES_PER_TASK = 2
+# Load ALL samples per task (set to -1 to load everything, or a positive number to limit)
+SAMPLES_PER_TASK = -1  # -1 means load all
 SEED = 42
-ALLOW_DOWNLOAD = True            # set False to force local cache only
-OUTPUT_DIR = Path("outputs/vlm_eval_hf_glm4_6v_fp8")
+OUTPUT_DIR = Path("outputs/vlm_eval_hf_glm_full_dataset")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -69,17 +89,50 @@ def output_path_for(model_name: str, cfg_name: str) -> Path:
     return OUTPUT_DIR / f"{_safe_filename(model_name)}__{_safe_filename(cfg_name)}.jsonl"
 
 
-print("Supported models :", list_supported_models())
-print("Output dir       :", OUTPUT_DIR)
+print("\n=== Evaluation Config ===")
+print(f"Models:") 
+print(f"  Allow download   : {ALLOW_DOWNLOAD}")
+print(f"  Models to eval   : {MODELS}")
+print(f"  Local overrides  : {len(LOCAL_MODEL_PATHS)} model(s)")
+if LOCAL_MODEL_PATHS:
+    for m, p in LOCAL_MODEL_PATHS.items():
+        print(f"    - {m}: {p}")
+print(f"\nDatasets:")
+print(f"  Allow download   : {ALLOW_DATASET_DOWNLOAD}")
+print(f"  Datasets to eval : {HF_DATASET_IDS}")
+print(f"  Splits           : {SPLITS}")
+print(f"  Samples per task : {'ALL' if SAMPLES_PER_TASK == -1 else SAMPLES_PER_TASK}")
+print(f"  Local overrides  : {len(LOCAL_DATASET_PATHS)} dataset(s)")
+if LOCAL_DATASET_PATHS:
+    for d, p in LOCAL_DATASET_PATHS.items():
+        print(f"    - {d}: {p}")
+print(f"\nOutput:")
+print(f"  Output dir       : {OUTPUT_DIR}")
+print(f"  Decoding configs : {len(DECODING_CONFIGS)} config(s)")
+print()
 
 
 
-# --- Sample 2 items per (dataset_id, split, task_type) ------------------------
+# --- Load dataset with local path support --------------------------------
+def load_dataset_with_local_fallback(ds_id: str, local_paths: dict[str, str], allow_download: bool):
+    """Load dataset, preferring local path if available."""
+    local_path = local_paths.get(ds_id)
+    if local_path:
+        print(f"  [dataset] loading from local path: {local_path}")
+        # Load from local parquet files
+        return load_dataset("parquet", data_dir=local_path)
+    else:
+        print(f"  [dataset] loading from HF Hub (allow_download={allow_download}): {ds_id}")
+        download_mode = "force_redownload" if allow_download else "reuse_cache_if_exists"
+        return load_dataset(ds_id, trust_remote_code=True, download_mode=download_mode)
+
+
+# --- Load all samples per (dataset_id, split, task_type) -------------------
 rng = random.Random(SEED)
 selected: list[dict] = []   # list of small dicts carrying PIL image + metadata
 
 for ds_id in HF_DATASET_IDS:
-    ds = load_dataset(ds_id)
+    ds = load_dataset_with_local_fallback(ds_id, LOCAL_DATASET_PATHS, ALLOW_DATASET_DOWNLOAD)
     for split in SPLITS:
         if split not in ds:
             print(f"  [skip] split '{split}' not in {ds_id}")
@@ -89,8 +142,9 @@ for ds_id in HF_DATASET_IDS:
             by_task[row["task_type"]].append(idx)
         for task, idxs in by_task.items():
             rng.shuffle(idxs)
-            SAMPLES_PER_TASK = len(idxs)
-            for idx in idxs[:SAMPLES_PER_TASK]:
+            # Use SAMPLES_PER_TASK; if -1, use all
+            samples_to_use = len(idxs) if SAMPLES_PER_TASK == -1 else SAMPLES_PER_TASK
+            for idx in idxs[:samples_to_use]:
                 row = ds[split][idx]
                 selected.append({
                     "dataset_id": ds_id,
@@ -205,7 +259,10 @@ for model_name in MODELS:
 
     # Load the model once, reuse across all cfgs.
     # If a local path was given, always use local_files_only=True.
+    # Otherwise, respect ALLOW_DOWNLOAD setting.
     _local_files_only = True if local_path else (not ALLOW_DOWNLOAD)
+    print(f"  [config] local_path={local_path}, ALLOW_DOWNLOAD={ALLOW_DOWNLOAD}")
+    print(f"  [config] local_files_only={_local_files_only} (will {'NOT ' if _local_files_only else ''}try to download)")
     runner = HuggingFaceVLM(spec, local_files_only=_local_files_only)
     try:
         t0 = time.time()
