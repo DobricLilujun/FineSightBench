@@ -6,7 +6,7 @@ import traceback
 import warnings
 from collections import defaultdict
 from pathlib import Path
-os.environ["CURL_CA_BUNDLE"]=""
+
 # Suppress noisy but harmless warnings from PyTorch and transformers.
 warnings.filterwarnings("ignore", message=".*use_reentrant.*", category=UserWarning)
 warnings.filterwarnings("ignore", message=".*None of the inputs have requires_grad.*", category=UserWarning)

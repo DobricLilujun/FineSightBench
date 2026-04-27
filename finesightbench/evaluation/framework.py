@@ -842,17 +842,19 @@ class HuggingFaceVLM:
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.device_map: str = "auto" if torch.cuda.is_available() else "cpu"
 
-    def _build_max_memory(self) -> dict[str, str] | None:
+    def _build_max_memory(self) -> dict[int | str, str] | None:
         """Leave VRAM headroom to reduce OOM from allocator/temporary buffers."""
         if not torch.cuda.is_available():
             return None
 
-        max_memory: dict[str, str] = {}
+        # NOTE: accelerate expects GPU keys as integer indices (0, 1, ...),
+        # not strings like "cuda:0".
+        max_memory: dict[int | str, str] = {}
         for i in range(torch.cuda.device_count()):
             total_bytes = torch.cuda.get_device_properties(i).total_memory
             # Keep ~10% free for runtime overhead and temporary tensors.
             usable_gib = max(int((total_bytes / (1024**3)) * 0.9), 1)
-            max_memory[f"cuda:{i}"] = f"{usable_gib}GiB"
+            max_memory[i] = f"{usable_gib}GiB"
         # Allow CPU offload fallback if GPU-only placement cannot fit.
         max_memory["cpu"] = "256GiB"
         return max_memory
